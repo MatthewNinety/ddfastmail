@@ -10,7 +10,7 @@ import requests, re, os, sys
 import json
 from bs4 import BeautifulSoup
 
-FASTMAIL_URL = "https://www.fastmail.com"
+FASTMAIL_URL = "https://www.fastmail.com/"
 
 class FastmailUpdater():
 	""" The fastmail updater manages the state necessary to navigate Fastmail's
@@ -25,9 +25,16 @@ class FastmailUpdater():
 		""" Attempts to login to fastmail with the given username and password.
 			If we fail to login to fastmail, this method will throw a RuntimeError """
 		response = self.sess.get(FASTMAIL_URL)
-
+		print "url:"
+		print  FASTMAIL_URL
+		print self.sess.get(FASTMAIL_URL)
 		session_key = re.search('<input value="([0-9a-g]*)" name="sessionKey"', response.content, re.IGNORECASE).group(1)
-		form = {"sessionKey": session_key,
+		print ""
+		print "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+#		print  ("initial response to get : %s" % response.content)
+		print "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+		print ""
+		form = {	"sessionKey": session_key,
 				"dologin": 1,
 				"hasPushState": 1,
 				"interface": 'text',
@@ -35,15 +42,25 @@ class FastmailUpdater():
 				'password': password,
 				'screenSize': 'desktop',
 				}
-
+		print ""
+		print ("found session_key _%s_ " % session_key)
+		print ""
 		response = self.sess.post(FASTMAIL_URL, form, headers={'referer':FASTMAIL_URL})
 		result = re.search("u=([0-9a-g]*)&", response.content)
 		if result is None:
+			print username
+			print "session key : %s" % session_key
+			print self.sess.get(FASTMAIL_URL)
+			print "-----"
+			print ("response to put : %s " % response.content)
+			print "-----"
+			print ""
+			print result
 			raise ValueError("Could not find user_id! (Wrong username/password?)")
 		else:
 			self.user_id = result.group(1)
 			self.logged_in = True
-	
+
 	def parse_static_fields(self, page):
 		""" Parses out all of the constant fields present in the page that are
 			hidden input fields with fixed values. We don't change these, but the
@@ -54,13 +71,42 @@ class FastmailUpdater():
 		for input_field in page.body.form.find_all('input'):
 			if 'value' in input_field.attrs and 'name' in input_field.attrs:
 				inputs.append([input_field.attrs['name'], input_field.attrs['value']])
-				
+
 		f_to_extract = ("MLS", 'SCD-DM', "MSS", "MSignalFeedback", "MSessionKey", "MSessionKeySeed", "FCD-DM")
 		static_inputs = [inp for inp in inputs if "CKS" in inp[0] or inp[0] in f_to_extract]
 		results = {'FCD-HasCustomDNS': '1'}
 		for inp in static_inputs:
 			results[inp[0]] = inp[1]
 		return results
+
+	def process_TLD(self, page, node_key_tld):
+		""" parses the TLD in order to switch pages if needed
+
+			"""
+                for option in page.body.form.find_all('option'):
+			print ""
+#			print("child : %s" % option)
+			print("value : %s" % option.get('value'))
+			if option.string == node_key_tld:
+				desired_id = option.get('value')
+			print("selected : %s" % option.get('selected'))
+			if option.get('selected') == "selected":
+				if option.string == node_key_tld:
+					return "selected"
+				else:
+					usedesiredid = True
+
+			print("string : %s" % option.string)
+			print ""
+
+
+
+		if usedesiredid == True:
+			return desired_id
+
+
+
+
 
 	def parse_domain(self, row):
 		""" Parses out the domain name from the given DNS record's row.
@@ -89,13 +135,13 @@ class FastmailUpdater():
 			if 'selected' in select_option.attrs:
 				return 'ttl', (select_box.attrs['name'], select_option.attrs['value'])
 		raise NameError("Unable to find TTL option!")
-		
+
 	def parse_rec_type(self, row):
 		""" Parses out the record type of the given DNS record's row. (A, MX, NS, TXT, etc.)
 			Returns ('type', '<recordtype>') """
 		column_index = 4
 		return "type", row[column_index].text
-	
+
 	def parse_rec_data(self, row):
 		""" Parses out the actual data value contained in the given DNS record's row.
 			The contents vary depending on row type. (IP addresses for A records, strings for CNAMEs, etc.)
@@ -103,7 +149,7 @@ class FastmailUpdater():
 		column_index = 5
 		column = row[column_index]
 		return 'data', (column.input.attrs['name'], column.input.attrs['value'])
-		
+
 	def parse_active(self, row):
 		""" Parses out the active checkbox from the given DNS record's row.
 			Returns ('active', ('<inputname>', 'on'|'off')) """
@@ -114,8 +160,10 @@ class FastmailUpdater():
 	def get_dns_records(self, page):
 		""" Gets a list of all the DNS records in the DNS config pages' table. """
 		table = page.body.form.find(class_="contentTable")
+		# might need to change to contentTable continuous
 		rows = table.find_all("tr")
 		# The first row is just column headers, the last is for adding new records. We skip both.
+		## might not need to skip the first one since they have th for the table header row - i don't see tr for that row.
 		rows = rows[1:-1]
 		rows = [row.find_all('td') for row in rows] # Break up individual columns
 		records = []
@@ -135,12 +183,67 @@ class FastmailUpdater():
 			an update if it detects a change. """
 		if not self.logged_in:
 			raise RuntimeError("Please log in first")
-		dns_page = FASTMAIL_URL + "/html/?MLS=ASE-*&u=%s&MSignal=CD-*U-1" % self.user_id
+		dns_page = FASTMAIL_URL + "/html/?MLS=ASE-*&u=%s&MSignal=CD-*U-1" % self.user_id # would need this step for each custom dns page ---- this is the first step
+
+
+		# based on the config file, it runs this for every single name in the config file.
+		# so I could add a step to make sure I'm on the right page for this domain and change it if I'm not
+
+
+
 		response = self.sess.get(dns_page)
 
 		page = BeautifulSoup(response.content)
 		static_inps = self.parse_static_fields(page)
-		records = self.get_dns_records(page)
+
+								# inside the get_dns_records(dnspage) it loads all names / all records
+								# if there are multiple domains we could either do a for each here, or maybe inside the get_dns_records
+								# we might want to only return pages that are custom dns, but then again, maybe the config page
+								# would take care of that - the user would only specify name updates for domains that are using custom DNS
+
+
+
+
+		# find out which domain i'm looking at from the dropdown
+		# if the record I'm processing now doesn't match, then try to switch to that page
+		# compare node_key to dropdown option which matches my 'from' page
+		print "------------------------------------"
+		print ""
+		print("node_key : %s" % node_key)
+		skipme = (node_key.rfind('.'))
+		node_key_tld =  (node_key[node_key.rfind('.',0,skipme)+1:])
+		print ("node_key_tld : %s" % node_key_tld)
+
+
+
+		tld = self.process_TLD(page,node_key_tld)
+
+		print("current fm TLD ID : %s" % tld)
+		#if TLD <> node_key then change page
+		# or I could change page inside parse_TLD but then I maybe should call it match TLD
+		if tld != "selected":
+			#change to tld
+			print("need to change here")
+			form = {}
+			form.update(static_inps)
+			form['FCD-DM']=tld
+			form['MSignal_CD-SetDomain*']=''
+			print form
+			response = self.sess.post(FASTMAIL_URL + "/html/?u=%s" % self.user_id, form)
+                        if not response.ok:
+                                print("Failed to change to the needed domain : %s" % response.text)
+                                response.raise_for_status() #Should raise an HTTPError with error code/msg
+#			print "-x-x-x-x-x--x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-"
+#			print response.content
+#			print "-x-x-x-x-x--x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-x-"
+			page = BeautifulSoup(response.content)
+	                static_inps = self.parse_static_fields(page)
+
+
+
+
+
+		records = self.get_dns_records(page) #need to pick your domain first - mcg
 
 		form = {}
 		form_needs_update = False
@@ -171,8 +274,11 @@ class FastmailUpdater():
 def get_ip():
 	""" Simple helper method that retrieves the current hosts outward facing IP address.
 		Uses the free service at ifconfig.me """
-	ip = requests.get("http://whatismyip.akamai.com").text
-	return ip.strip()
+	#ip = requests.get("http://ifconfig.me/ip").text
+	#return ip.strip()
+	ip = "192.168.0.97"
+	return ip
+
 
 if __name__ == "__main__":
 	if len(sys.argv) > 1:
@@ -180,6 +286,7 @@ if __name__ == "__main__":
 		conf = sys.argv[1]
 	else:
 		conf = "/etc/ddfastmail.conf"
+		print("Using configuration file: %s" % conf)
 	if not os.path.exists(conf):
 		raise RuntimeError("File does not exist! %s" % conf)
 	if os.stat(conf).st_mode & 044 > 0:
@@ -208,4 +315,3 @@ if __name__ == "__main__":
 				dns_records = eval(dns_records[1:])
 			updater.dns_update(domain, dns_records)
 
-		
